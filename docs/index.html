@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Net Rates → Excel</title>
+<script src="config.js"></script>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --line:#e3e6ea; --accent:#2b6cb0; --ok:#2f855a; --warn:#c05621; --muted:#6b7280; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.45 -apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:#1a202c; }
+  header { background:#1a2233; color:#fff; padding:20px 24px; }
+  header h1 { margin:0; font-size:18px; }
+  header p { margin:4px 0 0; color:#a0aec0; font-size:13px; }
+  main { max-width:1080px; margin:0 auto; padding:24px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:20px; margin-bottom:20px; }
+  .drop { border:2px dashed #cbd5e0; border-radius:10px; padding:32px; text-align:center; cursor:pointer; transition:.15s; }
+  .drop.hover { border-color:var(--accent); background:#ebf3fb; }
+  .drop small { color:var(--muted); }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:10px 18px; font-size:15px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  button.secondary { background:#38a169; }
+  .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .stat { display:inline-flex; flex-direction:column; padding:10px 16px; background:#f0f4f8; border-radius:8px; min-width:96px; }
+  .stat b { font-size:22px; }
+  .stat span { font-size:12px; color:var(--muted); }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th,td { border:1px solid var(--line); padding:6px 8px; text-align:right; white-space:nowrap; }
+  th:first-child, td:first-child, td.l { text-align:left; }
+  thead th { background:#f0f4f8; position:sticky; top:0; }
+  .tbl-wrap { overflow-x:auto; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:20px; font-size:12px; }
+  .pill.ok { background:#e6f4ea; color:var(--ok); }
+  .pill.no { background:#fdecea; color:#c53030; }
+  .roomname { font-weight:600; }
+  .fieldrow td:first-child { color:var(--muted); font-weight:400; }
+  .muted { color:var(--muted); }
+  .warn { color:var(--warn); }
+  .hidden { display:none; }
+  .err { background:#fdecea; color:#c53030; padding:12px 16px; border-radius:8px; }
+  code { background:#edf2f7; padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Net Rates → Excel</h1>
+  <p>Загрузите текстовый PDF с net-тарифами — получите заполненный шаблон Hyatt Ziva Cap Cana.</p>
+</header>
+<main>
+  <div class="card">
+    <div id="drop" class="drop">
+      <div id="dropText"><b>Перетащите PDF сюда</b> или нажмите, чтобы выбрать<br><small>принимается один текстовый PDF</small></div>
+      <input id="file" type="file" accept="application/pdf" class="hidden">
+    </div>
+    <div class="row" style="margin-top:16px;">
+      <button id="go" disabled>Обработать</button>
+      <span id="fname" class="muted"></span>
+    </div>
+  </div>
+
+  <div id="error" class="card err hidden"></div>
+
+  <div id="result" class="hidden">
+    <div class="card">
+      <div class="row" style="justify-content:space-between;">
+        <div class="row">
+          <div class="stat"><b id="s-matched">0</b><span>сопоставлено комнат</span></div>
+          <div class="stat"><b id="s-total">0</b><span>всего в шаблоне</span></div>
+          <div class="stat"><b id="s-cats">0</b><span>категорий в PDF</span></div>
+        </div>
+        <button id="download" class="secondary">Скачать .xlsx</button>
+      </div>
+      <div id="notmatched" style="margin-top:14px;"></div>
+      <div id="warnings" style="margin-top:8px;"></div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0;">Предпросмотр найденных ставок</h3>
+      <div class="tbl-wrap"><table id="preview"><thead></thead><tbody></tbody></table></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+let chosen = null, lastResult = null;
+
+// База API: на GitHub Pages берём из config.js (Railway), локально — тот же origin.
+const API_BASE = location.hostname.endsWith('github.io') ? (window.API_BASE || '') : '';
+
+const drop = $('#drop'), fileInput = $('#file');
+drop.onclick = () => fileInput.click();
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('hover'); };
+drop.ondragleave = () => drop.classList.remove('hover');
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove('hover'); if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); };
+fileInput.onchange = () => { if (fileInput.files[0]) setFile(fileInput.files[0]); };
+
+function setFile(f){
+  if (!f.name.toLowerCase().endsWith('.pdf')) { showError('Нужен PDF-файл.'); return; }
+  chosen = f; $('#fname').textContent = f.name; $('#go').disabled = false; hideError();
+}
+function showError(m){ const e=$('#error'); e.textContent=m; e.classList.remove('hidden'); }
+function hideError(){ $('#error').classList.add('hidden'); }
+
+$('#go').onclick = async () => {
+  if (!chosen) return;
+  $('#go').disabled = true; $('#go').textContent = 'Обработка…'; hideError(); $('#result').classList.add('hidden');
+  try {
+    const fd = new FormData(); fd.append('file', chosen);
+    const r = await fetch(API_BASE + '/api/process', { method:'POST', body:fd });
+    if (!r.ok) { const j = await r.json().catch(()=>({detail:r.statusText})); throw new Error(j.detail||'Ошибка'); }
+    lastResult = await r.json();
+    render(lastResult);
+  } catch (e){ showError('' + e.message); }
+  finally { $('#go').disabled = false; $('#go').textContent = 'Обработать'; }
+};
+
+function render(res){
+  $('#s-matched').textContent = res.summary.matched;
+  $('#s-total').textContent = res.summary.total_template_rooms;
+  $('#s-cats').textContent = res.summary.pdf_categories;
+
+  const nm = res.summary.empty_template_codes || [];
+  const up = res.summary.unmatched_pdf_codes || [];
+  let html = '';
+  if (nm.length) html += `<div><span class="pill no">не сопоставлено (${nm.length})</span> комнаты шаблона без данных в PDF: ${nm.map(c=>`<code>${c}</code>`).join(' ')}</div>`;
+  if (up.length) html += `<div style="margin-top:6px;"><span class="pill no">лишние</span> коды из PDF, которых нет в шаблоне: ${up.map(c=>`<code>${c}</code>`).join(' ')}</div>`;
+  if (!nm.length && !up.length) html = `<span class="pill ok">все комнаты сопоставлены</span>`;
+  $('#notmatched').innerHTML = html;
+
+  const w = res.summary.warnings || [];
+  $('#warnings').innerHTML = w.length ? `<div class="warn">⚠ ${w.join('<br>⚠ ')}</div>` : '';
+
+  // Заголовок таблицы: периоды
+  const per = res.periods || [];
+  const thead = $('#preview thead'), tbody = $('#preview tbody');
+  thead.innerHTML = '<tr><th>Комната</th><th>Показатель</th>' +
+    per.map(p=>`<th>${p.from}<br><span class="muted">→ ${p.to}</span></th>`).join('') + '</tr>';
+
+  let rows = '';
+  for (const room of res.rooms){
+    const fields = Object.keys(room.written || {});
+    if (room.matched && fields.length){
+      rows += `<tr><td class="l roomname" rowspan="${fields.length}">${room.name}<br><span class="muted">${room.code}</span></td>` +
+              fieldRow(room.written[fields[0]], fields[0]);
+      for (let i=1;i<fields.length;i++) rows += `<tr>${fieldRow(room.written[fields[i]], fields[i])}`;
+    } else {
+      rows += `<tr class="fieldrow"><td class="l roomname">${room.name}<br><span class="muted">${room.code}</span></td>` +
+              `<td class="l" colspan="${(per.length||6)+1}"><span class="pill no">${room.note||'не сопоставлено'}</span></td></tr>`;
+    }
+  }
+  tbody.innerHTML = rows;
+  $('#result').classList.remove('hidden');
+}
+
+function fieldRow(values, label){
+  return `<td class="l">${label}</td>` + values.map(v=>`<td>${fmt(v)}</td>`).join('') + '</tr>';
+}
+function fmt(v){ return (v===null||v===undefined) ? '' : Number(v).toFixed(2); }
+
+$('#download').onclick = () => {
+  if (!lastResult) return;
+  const bin = atob(lastResult.xlsx_base64);
+  const buf = new Uint8Array(bin.length);
+  for (let i=0;i<bin.length;i++) buf[i]=bin.charCodeAt(i);
+  const blob = new Blob([buf], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = lastResult.output_filename || 'filled.xlsx';
+  a.click(); URL.revokeObjectURL(a.href);
+};
+</script>
+</body>
+</html>
