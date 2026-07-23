@@ -58,6 +58,53 @@ class Category:
         return bool(self.codes) and "adult_mb" in self.rates
 
 
+def _reconstruct_lines(page, y_tol: float = 3.0, space_gap: float = 1.5) -> list[str]:
+    """
+    Собрать строки текста из координат символов (устойчиво к «кривой» вёрстке).
+
+    Штатный extract_text() угадывает порядок чтения и на нестандартно свёрстанных
+    таблицах (напр. стр. 2 Appendix A) рассыпает числа по вертикали. Здесь мы:
+      1) кластеризуем символы в строки по вертикали (top с допуском y_tol);
+      2) внутри строки сортируем по x и склеиваем, вставляя пробел там, где между
+         символами есть заметный горизонтальный разрыв (> space_gap).
+    Внутри одного числа разрывы малы -> оно остаётся цельным для regex.
+    Работает и для нормальных страниц, поэтому применяем ко всем.
+    """
+    chars = [c for c in page.chars if c["text"].strip()]
+    if not chars:
+        return []
+    chars.sort(key=lambda c: (round(c["top"], 1), c["x0"]))
+
+    rows: list[list[dict]] = []
+    cur: list[dict] = []
+    cur_top: float | None = None
+    for c in chars:
+        if cur_top is None or abs(c["top"] - cur_top) <= y_tol:
+            cur.append(c)
+            cur_top = c["top"] if cur_top is None else cur_top
+        else:
+            rows.append(cur)
+            cur = [c]
+            cur_top = c["top"]
+    if cur:
+        rows.append(cur)
+
+    lines: list[str] = []
+    for row in rows:
+        row.sort(key=lambda c: c["x0"])
+        out = []
+        prev_x1: float | None = None
+        for c in row:
+            if prev_x1 is not None and c["x0"] - prev_x1 > space_gap:
+                out.append(" ")
+            out.append(c["text"])
+            prev_x1 = c["x1"]
+        text = "".join(out).strip()
+        if text:
+            lines.append(text)
+    return lines
+
+
 def parse_pdf(path: str) -> tuple[list[Category], list[str]]:
     """
     Разобрать PDF. Возвращает (categories, raw_lines).
@@ -66,10 +113,7 @@ def parse_pdf(path: str) -> tuple[list[Category], list[str]]:
     lines: list[str] = []
     with pdfplumber.open(path) as pdf:
         for page in pdf.pages:
-            text = page.extract_text() or ""
-            for ln in text.splitlines():
-                if ln.strip():
-                    lines.append(ln.strip())
+            lines.extend(_reconstruct_lines(page))
 
     categories: list[Category] = []
     current: Optional[Category] = None

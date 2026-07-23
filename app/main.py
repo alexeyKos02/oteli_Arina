@@ -100,6 +100,9 @@ async def process(file: UploadFile = File(...)) -> JSONResponse:
             "matched": rr.matched,
             "note": rr.note,
             "written": rr.written,  # field -> список из 6 значений
+            "confidence": rr.confidence,
+            "level": rr.level,
+            "flags": rr.flags,
         })
 
     # Берём даты периодов из первой найденной категории (для шапки таблицы предпросмотра).
@@ -119,6 +122,11 @@ async def process(file: UploadFile = File(...)) -> JSONResponse:
             "empty_template_codes": report.empty_template_codes,
             "unmatched_pdf_codes": report.unmatched_pdf_codes,
             "warnings": report.warnings,
+            "confidence_counts": {
+                "high": sum(1 for r in report.rooms if r.matched and r.level == "high"),
+                "medium": sum(1 for r in report.rooms if r.matched and r.level == "medium"),
+                "low": sum(1 for r in report.rooms if r.matched and r.level == "low"),
+            },
         },
         "periods": periods,
         "rooms": rooms_payload,

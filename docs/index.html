@@ -32,6 +32,11 @@
   .pill { display:inline-block; padding:1px 8px; border-radius:20px; font-size:12px; }
   .pill.ok { background:#e6f4ea; color:var(--ok); }
   .pill.no { background:#fdecea; color:#c53030; }
+  .conf { display:inline-block; padding:1px 8px; border-radius:20px; font-size:11px; font-weight:600; }
+  .conf.high { background:#e6f4ea; color:var(--ok); }
+  .conf.medium { background:#fef3c7; color:#b45309; }
+  .conf.low { background:#fdecea; color:#c53030; }
+  .flags { font-size:11px; color:var(--warn); margin-top:2px; }
   .roomname { font-weight:600; }
   .fieldrow td:first-child { color:var(--muted); font-weight:400; }
   .muted { color:var(--muted); }
@@ -128,8 +133,13 @@ function render(res){
   if (!nm.length && !up.length) html = `<span class="pill ok">все комнаты сопоставлены</span>`;
   $('#notmatched').innerHTML = html;
 
+  const cc = res.summary.confidence_counts || {high:0,medium:0,low:0};
+  let confLine = `<div style="margin-top:10px;">Достоверность: ` +
+    `<span class="conf high">высокая ${cc.high}</span> ` +
+    (cc.medium ? `<span class="conf medium">средняя ${cc.medium}</span> ` : '') +
+    (cc.low ? `<span class="conf low">низкая ${cc.low}</span>` : '') + `</div>`;
   const w = res.summary.warnings || [];
-  $('#warnings').innerHTML = w.length ? `<div class="warn">⚠ ${w.join('<br>⚠ ')}</div>` : '';
+  $('#warnings').innerHTML = confLine + (w.length ? `<div class="warn" style="margin-top:6px;">⚠ ${w.join('<br>⚠ ')}</div>` : '');
 
   // Заголовок таблицы: периоды
   const per = res.periods || [];
@@ -141,7 +151,8 @@ function render(res){
   for (const room of res.rooms){
     const fields = Object.keys(room.written || {});
     if (room.matched && fields.length){
-      rows += `<tr><td class="l roomname" rowspan="${fields.length}">${room.name}<br><span class="muted">${room.code}</span></td>` +
+      const conf = confBadge(room);
+      rows += `<tr><td class="l roomname" rowspan="${fields.length}">${room.name}<br><span class="muted">${room.code}</span>${conf}</td>` +
               fieldRow(room.written[fields[0]], fields[0]);
       for (let i=1;i<fields.length;i++) rows += `<tr>${fieldRow(room.written[fields[i]], fields[i])}`;
     } else {
@@ -153,6 +164,14 @@ function render(res){
   $('#result').classList.remove('hidden');
 }
 
+function confBadge(room){
+  const lvl = room.level || '—';
+  const label = {high:'высокая', medium:'средняя', low:'низкая'}[lvl] || lvl;
+  const pct = Math.round((room.confidence||0)*100);
+  let html = `<div style="margin-top:4px;"><span class="conf ${lvl}">достоверность: ${label} · ${pct}%</span></div>`;
+  if (room.flags && room.flags.length) html += `<div class="flags">⚠ ${room.flags.join('; ')}</div>`;
+  return html;
+}
 function fieldRow(values, label){
   return `<td class="l">${label}</td>` + values.map(v=>`<td>${fmt(v)}</td>`).join('') + '</tr>';
 }
