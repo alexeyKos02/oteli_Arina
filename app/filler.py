@@ -19,6 +19,7 @@ from .mapping import (
     OFFSET_ADULT_EXB,
     OFFSET_CHILD312_MB,
     OFFSET_CHILD312_EXB,
+    OFFSET_SINGLE_1A,
     OFFSET_PERIOD_START,
 )
 from .parser import Category, CODE_RE
@@ -104,10 +105,16 @@ def fill_template(template_path: str, categories: list[Category]) -> tuple[bytes
         adult_mb = cat.rates.get("adult_mb")
         adult_exb = cat.rates.get("adult_exb")
         child_exb = cat.rates.get("child312_exb")
+        single = cat.rates.get("single")
 
         if adult_mb:
             _write_row(ws, row + OFFSET_ADULT_MB, adult_mb)
             rr.written["Adult MB"] = adult_mb
+        # 1A (Single): формула шаблона не учитывает надбавку за одноместное размещение —
+        # пишем "Single net" из PDF поверх формулы.
+        if single:
+            _write_row(ws, row + OFFSET_SINGLE_1A, single)
+            rr.written["1A (Single)"] = single
         if adult_exb:
             _write_row(ws, row + OFFSET_ADULT_EXB, adult_exb)
             rr.written["Adult ExB"] = adult_exb
