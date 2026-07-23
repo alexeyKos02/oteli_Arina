@@ -65,22 +65,86 @@ def _template_room_blocks(ws) -> list[tuple[int, str, str]]:
     return blocks
 
 
-def _write_row(ws, row: int, values: list[float]) -> None:
-    for col, val in zip(PERIOD_COLUMNS, values):
+def _write_row(ws, row: int, values: list[float], cols: list[int]) -> None:
+    for col, val in zip(cols, values):
         ws.cell(row=row, column=col, value=val)
 
 
-def fill_template(template_path: str, categories: list[Category]) -> tuple[bytes, FillReport]:
+def _block_end(ws, row: int, room_rows: list[int]) -> int:
+    nxt = [r for r in room_rows if r > row]
+    return min(nxt) if nxt else ws.max_row + 1
+
+
+def _has_child_combo(ws, row: int, room_rows: list[int]) -> bool:
+    """Есть ли в блоке комбинации с ребёнком (метка содержит 'c12') — признак семейной комнаты."""
+    for r in range(row, _block_end(ws, row, room_rows)):
+        a = ws.cell(r, 1).value
+        if isinstance(a, str) and "c12" in a.lower():
+            return True
+    return False
+
+
+def fill_labeled_blocks(ws, row: int, cat: Category, cols: list[int], room_rows) -> dict:
+    """Запись для формата labeled_blocks (Adult MB/ExB, Child 3-12, Single-надбавка)."""
+    written: dict[str, list[float]] = {}
+    adult_mb = cat.rates.get("adult_mb")
+    adult_exb = cat.rates.get("adult_exb")
+    child_exb = cat.rates.get("child312_exb")
+    single = cat.rates.get("single")
+
+    if adult_mb:
+        _write_row(ws, row + OFFSET_ADULT_MB, adult_mb, cols)
+        written["Adult MB"] = adult_mb
+    # 1A (Single): формула шаблона не учитывает надбавку за одноместное размещение —
+    # пишем "Single net" из PDF поверх формулы.
+    if single:
+        _write_row(ws, row + OFFSET_SINGLE_1A, single, cols)
+        written["1A (Single)"] = single
+    if adult_exb:
+        _write_row(ws, row + OFFSET_ADULT_EXB, adult_exb, cols)
+        written["Adult ExB"] = adult_exb
+    # Child 3-12 заполняем только если PDF даёт эту строку.
+    if child_exb:
+        _write_row(ws, row + OFFSET_CHILD312_EXB, child_exb, cols)
+        written["Child 3-12 ExB"] = child_exb
+        if adult_mb:  # Child 3-12 MB = Adult MB (правило подтверждено на эталоне)
+            _write_row(ws, row + OFFSET_CHILD312_MB, adult_mb, cols)
+            written["Child 3-12 MB"] = adult_mb
+    return written
+
+
+def fill_rate_matrix(ws, row: int, cat: Category, cols: list[int], room_rows) -> dict:
     """
-    Заполнить шаблон. Возвращает (xlsx_bytes, report).
+    Запись для формата rate_matrix: только базовый Adult MB. Всё прочее (1A=×1.6,
+    ExB=×0.85, Child ExB=×0.5, 2A) — формулы шаблона. Для семейных комнат Child MB
+    тоже = Adult MB (эти комбинации на него ссылаются).
+    """
+    written: dict[str, list[float]] = {}
+    adult_mb = cat.rates.get("adult_mb")
+    if adult_mb:
+        _write_row(ws, row + OFFSET_ADULT_MB, adult_mb, cols)
+        written["Adult MB"] = adult_mb
+        if _has_child_combo(ws, row, room_rows):
+            _write_row(ws, row + OFFSET_CHILD312_MB, adult_mb, cols)
+            written["Child 2-12 MB"] = adult_mb
+    return written
+
+
+def fill_template(template_path: str, categories: list[Category], profile) -> tuple[bytes, FillReport]:
+    """
+    Заполнить шаблон согласно профилю формата. Возвращает (xlsx_bytes, report).
+    profile: объект с полями period_columns, n_periods, required_keys,
+             single_multiplier, fill_room(ws,row,cat,cols,room_rows)->dict.
     """
     wb = openpyxl.load_workbook(template_path, data_only=False)
     ws = wb.active
+    cols = profile.period_columns
 
     blocks = _template_room_blocks(ws)
     code_to_block = {code: (row, name) for row, name, code in blocks if code}
+    room_rows = [row for row, _, _ in blocks]
 
-    # code -> Category (King и Double делят ставки одной категории)
+    # code -> Category (в labeled_blocks King и Double делят одну категорию)
     code_to_cat: dict[str, Category] = {}
     all_pdf_codes: list[str] = []
     for cat in categories:
@@ -89,7 +153,6 @@ def fill_template(template_path: str, categories: list[Category]) -> tuple[bytes
             code_to_cat[code] = cat
 
     report = FillReport()
-    matched_codes: set[str] = set()
 
     for code, (row, name) in sorted(code_to_block.items(), key=lambda x: x[1][0]):
         cat = code_to_cat.get(code)
@@ -99,37 +162,12 @@ def fill_template(template_path: str, categories: list[Category]) -> tuple[bytes
             report.empty_template_codes.append(code)
             continue
 
-        matched_codes.add(code)
         rr = RoomReport(code=code, name=name, matched=True)
-
-        adult_mb = cat.rates.get("adult_mb")
-        adult_exb = cat.rates.get("adult_exb")
-        child_exb = cat.rates.get("child312_exb")
-        single = cat.rates.get("single")
-
-        if adult_mb:
-            _write_row(ws, row + OFFSET_ADULT_MB, adult_mb)
-            rr.written["Adult MB"] = adult_mb
-        # 1A (Single): формула шаблона не учитывает надбавку за одноместное размещение —
-        # пишем "Single net" из PDF поверх формулы.
-        if single:
-            _write_row(ws, row + OFFSET_SINGLE_1A, single)
-            rr.written["1A (Single)"] = single
-        if adult_exb:
-            _write_row(ws, row + OFFSET_ADULT_EXB, adult_exb)
-            rr.written["Adult ExB"] = adult_exb
-        # Child 3-12 заполняем только если PDF даёт эту строку.
-        if child_exb:
-            _write_row(ws, row + OFFSET_CHILD312_EXB, child_exb)
-            rr.written["Child 3-12 ExB"] = child_exb
-            if adult_mb:  # Child 3-12 MB = Adult MB (правило подтверждено на эталоне)
-                _write_row(ws, row + OFFSET_CHILD312_MB, adult_mb)
-                rr.written["Child 3-12 MB"] = adult_mb
-
+        rr.written = profile.fill_room(ws, row, cat, cols, room_rows)
         if not rr.written:
             rr.note = "категория найдена, но ставки не извлеклись"
 
-        _score_room(ws, row, cat, rr)
+        _score_room(ws, row, cat, rr, profile)
         if rr.level in ("low", "medium"):
             report.warnings.append(f"{code}: достоверность {rr.level} — {'; '.join(rr.flags)}")
         report.rooms.append(rr)
@@ -170,55 +208,57 @@ def _parse_any_date(value) -> date | None:
     return None
 
 
-def _score_room(ws, row: int, cat: Category, rr: RoomReport) -> None:
+# Метки обязательных ключей для сообщений
+_KEY_LABELS = {"adult_mb": "Adult MB", "adult_exb": "Adult ExB", "child312_exb": "Child ExB"}
+
+
+def _score_room(ws, row: int, cat: Category, rr: RoomReport, profile) -> None:
     """
     Оценить достоверность извлечения комнаты. Заполняет rr.confidence/level/flags.
-
-    Сигналы (каждый штраф снижает балл и добавляет флаг):
-      * ровно 6 периодов в PDF;
-      * обязательные ставки Adult MB / Adult ExB присутствуют и содержат 6 значений;
-      * даты периодов из PDF совпадают с датами шаблона (по порядку);
-      * кросс-проверка: parsed "Single net" ≈ Adult MB * 1.7 (как в формуле шаблона);
-      * все значения положительны.
+    Параметры берутся из профиля: число периодов, обязательные ключи, множитель
+    кросс-проверки Single (если формат его содержит).
     """
+    n_periods = profile.n_periods
     score = 1.0
     flags: list[str] = []
 
     # 1) число периодов
     n = len(cat.period_starts)
-    if n != N_PERIODS:
+    if n != n_periods:
         score -= 0.4
-        flags.append(f"{n} периодов вместо {N_PERIODS}")
+        flags.append(f"{n} периодов вместо {n_periods}")
 
     # 2) полнота обязательных строк
-    for key, label in (("adult_mb", "Adult MB"), ("adult_exb", "Adult ExB")):
+    for key in profile.required_keys:
+        label = _KEY_LABELS.get(key, key)
         vals = cat.rates.get(key)
         if not vals:
             score -= 0.3
             flags.append(f"нет строки «{label}»")
-        elif len(vals) != N_PERIODS:
+        elif len(vals) != n_periods:
             score -= 0.2
-            flags.append(f"«{label}»: {len(vals)} значений вместо {N_PERIODS}")
+            flags.append(f"«{label}»: {len(vals)} значений вместо {n_periods}")
 
-    # 3) сверка дат периодов с шаблоном
+    # 3) сверка дат периодов с шаблоном (пропускается, если даты не парсятся, напр. диапазоны)
     tmpl_dates = [_parse_any_date(ws.cell(row + OFFSET_PERIOD_START, c).value)
-                  for c in PERIOD_COLUMNS]
-    pdf_dates = [_parse_any_date(d) for d in cat.period_starts[:N_PERIODS]]
+                  for c in profile.period_columns]
+    pdf_dates = [_parse_any_date(d) for d in cat.period_starts[:n_periods]]
     mism = sum(1 for a, b in zip(tmpl_dates, pdf_dates)
                if a and b and a != b)
     if mism:
         score -= min(0.3, 0.1 * mism)
         flags.append(f"даты периодов расходятся с шаблоном ({mism})")
 
-    # 4) кросс-проверка Single ≈ Adult MB * 1.7
+    # 4) кросс-проверка Single ≈ Adult MB * множитель (только для форматов с Single)
+    mult = getattr(profile, "single_multiplier", None)
     single = cat.rates.get("single")
     adult_mb = cat.rates.get("adult_mb")
-    if single and adult_mb and len(single) == len(adult_mb):
+    if mult and single and adult_mb and len(single) == len(adult_mb):
         bad = sum(1 for s, a in zip(single, adult_mb)
-                  if abs(s - a * SINGLE_MULTIPLIER) > 1.0)
+                  if abs(s - a * mult) > 1.0)
         if bad:
             score -= min(0.3, 0.1 * bad)
-            flags.append(f"Single ≠ AdultMB×1.7 в {bad} периодах")
+            flags.append(f"Single ≠ AdultMB×{mult} в {bad} периодах")
 
     # 5) положительность значений
     for key, vals in cat.rates.items():

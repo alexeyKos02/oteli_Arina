@@ -105,15 +105,23 @@ def _reconstruct_lines(page, y_tol: float = 3.0, space_gap: float = 1.5) -> list
     return lines
 
 
-def parse_pdf(path: str) -> tuple[list[Category], list[str]]:
-    """
-    Разобрать PDF. Возвращает (categories, raw_lines).
-    raw_lines — плоский список строк текста (для диагностики/отчёта).
-    """
+def pdf_lines(path: str) -> list[str]:
+    """Все строки PDF, собранные из координат символов (устойчиво к вёрстке)."""
     lines: list[str] = []
     with pdfplumber.open(path) as pdf:
         for page in pdf.pages:
             lines.extend(_reconstruct_lines(page))
+    return lines
+
+
+def parse_labeled_blocks(path: str) -> tuple[list[Category], list[str]]:
+    """
+    Формат «labeled_blocks»: на каждую комнату отдельный блок с именованными
+    строками ставок (Double PP PN net / Single net / 3rd & 4th / Child 3-12),
+    6 периодов, даты вида 3-Jan-27. (Встречается, напр., в Appendix A.)
+    Возвращает (categories, raw_lines).
+    """
+    lines = pdf_lines(path)
 
     categories: list[Category] = []
     current: Optional[Category] = None
@@ -182,5 +190,57 @@ def parse_pdf(path: str) -> tuple[list[Category], list[str]]:
                 seen.add(c)
                 uniq.append(c)
         cat.codes = uniq
+
+    return categories, lines
+
+
+# --- Формат "rate_matrix" ---------------------------------------------------
+# Единая таблица базовых ставок: строка = код комнаты, колонки = периоды.
+# Даты периодов заданы диапазонами вида 01/11-23/12; числа в европейском формате
+# (144,00). Надбавки/скидки (одиночное +60%, ребёнок -50% …) идут отдельной
+# таблицей и в шаблон НЕ переносятся — они уже зашиты формулами шаблона.
+RANGE_RE = re.compile(r"\d{2}/\d{2}-\d{2}/\d{2}")
+MONEY_EU_RE = re.compile(r"\d{1,3}(?:\.\d{3})*,\d{2}")
+CODE_START_RE = re.compile(r"^([A-Z][A-Z0-9]{3})\b")
+
+
+def _num_eu(s: str) -> float:
+    """'1.234,56' / '144,00' -> float."""
+    return float(s.replace(".", "").replace(",", "."))
+
+
+def parse_rate_matrix(path: str, n_periods: int = 8) -> tuple[list[Category], list[str]]:
+    """
+    Формат «rate_matrix»: одна таблица «CONTRACT RATES» — строка на код комнаты
+    с базовой ставкой по каждому периоду. Берём ТОЛЬКО первую такую таблицу
+    (заголовок ровно `Room` + диапазоны дат), игнорируя таблицу надбавок (с `%`)
+    и другие секции. Возвращает (categories, raw_lines).
+    """
+    lines = pdf_lines(path)
+    categories: list[Category] = []
+    periods: list[str] = []
+    state = "before"  # before -> in -> done
+
+    for line in lines:
+        parts = line.split()
+        is_header = (
+            bool(parts) and parts[0] == "Room" and "Age" not in line
+            and len(RANGE_RE.findall(line)) == n_periods
+        )
+        if state == "before" and is_header:
+            periods = RANGE_RE.findall(line)
+            state = "in"
+            continue
+        if state == "in":
+            m = CODE_START_RE.match(line)
+            money = MONEY_EU_RE.findall(line)
+            if m and len(money) >= n_periods and "%" not in line:
+                cat = Category()
+                cat.codes = [m.group(1)]
+                cat.period_starts = list(periods)
+                cat.rates["adult_mb"] = [_num_eu(x) for x in money[:n_periods]]
+                categories.append(cat)
+            else:
+                state = "done"  # первая таблица закончилась — дальше не парсим
 
     return categories, lines

@@ -19,6 +19,7 @@
   .drop small { color:var(--muted); }
   button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:10px 18px; font-size:15px; cursor:pointer; }
   button:disabled { opacity:.5; cursor:default; }
+  select { padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-size:14px; background:#fff; }
   button.secondary { background:#38a169; }
   .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
   .stat { display:inline-flex; flex-direction:column; padding:10px 16px; background:#f0f4f8; border-radius:8px; min-width:96px; }
@@ -49,7 +50,7 @@
 <body>
 <header>
   <h1>Net Rates → Excel</h1>
-  <p>Загрузите текстовый PDF с net-тарифами — получите заполненный шаблон Hyatt Ziva Cap Cana.</p>
+  <p>Загрузите текстовый PDF с net-тарифами — формат определится сам, получите заполненный Excel.</p>
 </header>
 <main>
   <div class="card">
@@ -58,6 +59,12 @@
       <input id="file" type="file" accept="application/pdf" class="hidden">
     </div>
     <div class="row" style="margin-top:16px;">
+      <label class="muted" for="profile">Формат PDF:</label>
+      <select id="profile">
+        <option value="">Определить автоматически</option>
+      </select>
+    </div>
+    <div class="row" style="margin-top:12px;">
       <button id="go" disabled>Обработать</button>
       <span id="fname" class="muted"></span>
     </div>
@@ -67,6 +74,7 @@
 
   <div id="result" class="hidden">
     <div class="card">
+      <div id="profileInfo" style="margin-bottom:12px;"></div>
       <div class="row" style="justify-content:space-between;">
         <div class="row">
           <div class="stat"><b id="s-matched">0</b><span>сопоставлено комнат</span></div>
@@ -93,6 +101,21 @@ let chosen = null, lastResult = null;
 // База API: на GitHub Pages берём из config.js (Railway), локально — тот же origin.
 const API_BASE = location.hostname.endsWith('github.io') ? (window.API_BASE || '') : '';
 
+// Заполняем список форматов PDF.
+(async function loadProfiles(){
+  try {
+    const r = await fetch(API_BASE + '/api/profiles');
+    if (!r.ok) return;
+    const j = await r.json();
+    const sel = $('#profile');
+    for (const p of (j.profiles||[])){
+      const o = document.createElement('option');
+      o.value = p.id; o.textContent = p.name + (p.template_exists ? '' : ' (нет шаблона)');
+      sel.appendChild(o);
+    }
+  } catch(e){ /* авто-режим всё равно работает */ }
+})();
+
 const drop = $('#drop'), fileInput = $('#file');
 drop.onclick = () => fileInput.click();
 drop.ondragover = e => { e.preventDefault(); drop.classList.add('hover'); };
@@ -112,6 +135,8 @@ $('#go').onclick = async () => {
   $('#go').disabled = true; $('#go').textContent = 'Обработка…'; hideError(); $('#result').classList.add('hidden');
   try {
     const fd = new FormData(); fd.append('file', chosen);
+    const pid = $('#profile').value;
+    if (pid) fd.append('profile', pid);
     const r = await fetch(API_BASE + '/api/process', { method:'POST', body:fd });
     if (!r.ok) { const j = await r.json().catch(()=>({detail:r.statusText})); throw new Error(j.detail||'Ошибка'); }
     lastResult = await r.json();
@@ -121,6 +146,10 @@ $('#go').onclick = async () => {
 };
 
 function render(res){
+  if (res.profile){
+    const how = res.profile.auto_detected ? 'определён автоматически' : 'выбран вручную';
+    $('#profileInfo').innerHTML = `Формат: <b>${res.profile.name}</b> <span class="muted">(${how})</span>`;
+  } else $('#profileInfo').innerHTML = '';
   $('#s-matched').textContent = res.summary.matched;
   $('#s-total').textContent = res.summary.total_template_rooms;
   $('#s-cats').textContent = res.summary.pdf_categories;
